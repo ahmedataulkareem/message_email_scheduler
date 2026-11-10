@@ -135,11 +135,18 @@ function twilio() {
 
 export async function sendSmsProvider(args: { to: string; body: string }): Promise<{ providerId: string }> {
   const messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
-  if (!messagingServiceSid) throw new Error("TWILIO_MESSAGING_SERVICE_SID not set");
+  const fromNumber = process.env.TWILIO_FROM_NUMBER;
+  // A Messaging Service bundles senders, auto opt-out handling, etc. — the
+  // right setup once 10DLC is approved. ponytail: Twilio trial accounts can't
+  // create one without upgrading (adding billing), so for a free pilot/test
+  // run, send straight from one trial number instead via TWILIO_FROM_NUMBER.
+  if (!messagingServiceSid && !fromNumber) {
+    throw new Error("Set TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM_NUMBER");
+  }
   const msg = await twilio().messages.create({
     to: args.to,
     body: args.body,
-    messagingServiceSid,
+    ...(messagingServiceSid ? { messagingServiceSid } : { from: fromNumber }),
     statusCallback: `${process.env.APP_URL}/api/webhooks/twilio`,
   });
   return { providerId: msg.sid };
