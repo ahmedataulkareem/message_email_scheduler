@@ -1,7 +1,9 @@
-// Column-alias matching + row normalization for uploading a voter/contact
-// Excel file with a "similar" structure through the app — not just the
-// one-time District 23 seed (scripts/import.sql), which expects that file's
-// exact 54-column layout. This is for whatever a customer sends next.
+// Importing a voter/contact spreadsheet: column matching by name (so any file
+// "similar" to District 23 works, not just its exact layout), row
+// normalization, and the upsert. Used by both the /contacts upload and
+// scripts/import-contacts.ts, so there is one import path.
+import * as XLSX from "xlsx";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export interface CanonicalField {
   key: string;
@@ -65,16 +67,28 @@ export function normalizeEmail(raw: unknown): string | null {
   return EMAIL_RE.test(v) ? v : null;
 }
 
-/** US 10-digit number to E.164. Returns null if it can't be made into one. */
+/**
+ * To E.164. Bare numbers are read as US (10 digits, or 11 starting with 1);
+ * a number typed with a leading "+" keeps its own country code.
+ */
 export function normalizeCell(raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;
-  const digits = String(raw).replace(/\D/g, "");
+  const s = String(raw).trim();
+  const digits = s.replace(/\D/g, "");
+  if (s.startsWith("+")) return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : null;
   if (digits.length === 10) return `+1${digits}`;
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
   return null;
 }
 
 export function normalizeBirthdate(raw: unknown): string | null {
+  // Excel stores dates as a day count from 1899-12-30. Converting the serial
+  // directly in UTC avoids the timezone shift that turned 4 March into
+  // 3 March when the file was read on a machine east of UTC (e.g. IST).
+  if (typeof raw === "number" && raw > 0 && raw < 2958465) {
+    const iso = new Date(Math.round((raw - 25569) * 86_400_000)).toISOString().slice(0, 10);
+    return iso.startsWith("9999") ? null : iso;
+  }
   if (raw instanceof Date && !isNaN(raw.getTime())) {
     return raw.toISOString().slice(0, 10);
   }
@@ -103,6 +117,7 @@ export function normalizeEmailStatus(raw: unknown): EmailStatus {
 }
 
 export interface ContactRecord {
+  external_key: string;
   voter_id: string | null;
   first_name: string | null;
   last_name: string | null;
@@ -127,6 +142,24 @@ function str(v: unknown): string | null {
 }
 
 /**
+ * One stable identity per person, so re-uploading a file updates rows
+ * instead of duplicating them. Voter id when the file has one; else email;
+ * else phone + name (phones alone aren't unique: households share them).
+ * Must match the backfill in supabase/migrations/0002_fixes.sql.
+ */
+export function externalKey(c: {
+  voter_id: string | null;
+  email: string | null;
+  cell_e164: string | null;
+  first_name: string | null;
+  last_name: string | null;
+}): string {
+  if (c.voter_id) return `voter:${c.voter_id}`;
+  if (c.email) return `email:${c.email}`;
+  return `cell:${c.cell_e164 ?? ""}:${(c.first_name ?? "").toLowerCase()}:${(c.last_name ?? "").toLowerCase()}`;
+}
+
+/**
  * Turns one uploaded row into a contact record ready to upsert, or null if
  * the row has neither an email nor a usable cell number — nothing to message.
  */
@@ -142,11 +175,15 @@ export function normalizeRow(row: Record<string, unknown>, mapping: Record<strin
 
   const ageRaw = byKey.get("age");
   const age = typeof ageRaw === "number" ? ageRaw : parseInt(String(ageRaw ?? ""), 10);
+  const voterId = str(byKey.get("voter_id"));
+  const firstName = str(byKey.get("first_name"));
+  const lastName = str(byKey.get("last_name"));
 
   return {
-    voter_id: str(byKey.get("voter_id")),
-    first_name: str(byKey.get("first_name")),
-    last_name: str(byKey.get("last_name")),
+    external_key: externalKey({ voter_id: voterId, email, cell_e164: cell, first_name: firstName, last_name: lastName }),
+    voter_id: voterId,
+    first_name: firstName,
+    last_name: lastName,
     email,
     email_status: email ? normalizeEmailStatus(byKey.get("email_status")) : "unverified",
     cell_e164: cell,
@@ -159,5 +196,98 @@ export function normalizeRow(row: Record<string, unknown>, mapping: Record<strin
     state: str(byKey.get("state")),
     county: str(byKey.get("county")),
     raw: row,
+  };
+}
+
+/** First sheet as row objects keyed by header. Dates stay Excel serials (see normalizeBirthdate). */
+export function parseWorkbook(buf: Buffer): Record<string, unknown>[] {
+  const workbook = XLSX.read(buf, { type: "buffer" });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(sheet, { defval: null });
+}
+
+export interface ImportResult {
+  ok: boolean;
+  error?: string;
+  unmatchedHeaders?: string[];
+  rowsRead?: number;
+  imported?: number;
+  skipped?: number;
+  duplicatesInFile?: number;
+}
+
+const CHUNK = 1000;
+
+const EMAIL_RANK: Record<EmailStatus, number> = { deliverable: 3, catch_all: 2, unverified: 1, undeliverable: 0 };
+
+/**
+ * Voter files list one row per email address (District 23 repeats 12,305
+ * voters this way). Keep one contact per person with their most deliverable
+ * address, so nobody gets the same greeting at three addresses.
+ */
+export function betterRecord(a: ContactRecord, b: ContactRecord): ContactRecord {
+  const rank = (r: ContactRecord) => (r.email ? EMAIL_RANK[r.email_status] + 1 : 0);
+  return rank(b) > rank(a) ? b : a;
+}
+
+/**
+ * Validates headers, normalizes every row and upserts on (tenant_id,
+ * external_key) in chunks — one request per 1,000 rows instead of one huge
+ * request that the API rejects. Rows repeated within the file collapse to
+ * the last one (Postgres can't upsert the same key twice in one statement).
+ */
+export async function importRows(
+  db: SupabaseClient,
+  tenantId: string,
+  rows: Record<string, unknown>[],
+  onProgress?: (done: number, total: number) => void
+): Promise<ImportResult> {
+  if (rows.length === 0) return { ok: false, error: "That sheet has no rows." };
+
+  const headers = Object.keys(rows[0]);
+  const mapping = mapHeaders(headers);
+  const missing = missingRequiredFields(mapping);
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      error: `Couldn't find a column for: ${missing.join(", ")}.`,
+      unmatchedHeaders: headers.filter((h) => !mapping[h]),
+    };
+  }
+  if (!hasContactChannel(mapping)) {
+    return { ok: false, error: "No email or cell phone column found, so there's nothing to message." };
+  }
+
+  const byKey = new Map<string, ContactRecord>();
+  let skipped = 0;
+  for (const row of rows) {
+    const rec = normalizeRow(row, mapping);
+    if (!rec) {
+      skipped++;
+      continue;
+    }
+    const seen = byKey.get(rec.external_key);
+    byKey.set(rec.external_key, seen ? betterRecord(seen, rec) : rec);
+  }
+  const records = [...byKey.values()];
+  const now = new Date().toISOString();
+
+  let imported = 0;
+  for (let i = 0; i < records.length; i += CHUNK) {
+    const chunk = records.slice(i, i + CHUNK).map((r) => ({ ...r, tenant_id: tenantId, updated_at: now }));
+    const { error } = await db.from("contacts").upsert(chunk, { onConflict: "tenant_id,external_key" });
+    if (error) {
+      return { ok: false, error: `Database error after ${imported} rows: ${error.message}`, rowsRead: rows.length, imported, skipped };
+    }
+    imported += chunk.length;
+    onProgress?.(imported, records.length);
+  }
+
+  return {
+    ok: true,
+    rowsRead: rows.length,
+    imported,
+    skipped,
+    duplicatesInFile: rows.length - skipped - records.length,
   };
 }

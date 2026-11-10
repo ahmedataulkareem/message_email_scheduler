@@ -70,3 +70,28 @@ test("normalizeRow keeps a row with just an email", () => {
   assert.equal(row?.email, "pat@example.com");
   assert.equal(row?.cell_e164, null);
 });
+
+test("normalizeBirthdate converts Excel serials without a timezone shift", async () => {
+  // 23962 is 1965-08-08 in Excel; the old Date path gave 08-07 east of UTC.
+  assert.equal(normalizeBirthdate(23962), "1965-08-08");
+  assert.equal(normalizeBirthdate(2958101), null); // 1/1/9999 "year unknown" placeholder
+});
+
+test("normalizeCell keeps an explicit +country code", () => {
+  assert.equal(normalizeCell("+91 96767 70319"), "+919676770319");
+  assert.equal(normalizeCell("+12"), null);
+});
+
+test("one contact per voter, keeping the most deliverable email", async () => {
+  const { betterRecord, externalKey } = await import("./contacts-import");
+  const mapping = mapHeaders(["Voters_StateVoterID", "First Name", "Last Name", "email1", "Status"]);
+  const bad = normalizeRow({ Voters_StateVoterID: 7, "First Name": "Pat", "Last Name": "Lee", email1: "old@x.com", Status: "Undeliverable" }, mapping)!;
+  const good = normalizeRow({ Voters_StateVoterID: 7, "First Name": "Pat", "Last Name": "Lee", email1: "new@x.com", Status: "Deliverable" }, mapping)!;
+  assert.equal(bad.external_key, good.external_key);
+  assert.equal(betterRecord(bad, good).email, "new@x.com");
+  assert.equal(betterRecord(good, bad).email, "new@x.com");
+  assert.equal(
+    externalKey({ voter_id: null, email: null, cell_e164: "+14105550101", first_name: "Pat", last_name: "Lee" }),
+    "cell:+14105550101:pat:lee"
+  );
+});

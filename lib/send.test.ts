@@ -68,3 +68,18 @@ test("nextRetry backs off then gives up after 3 attempts", () => {
   assert.equal(nextRetry(2).failed, false);
   assert.equal(nextRetry(3).failed, true);
 });
+
+test("isPermanentError: 4xx fails fast, 429 and 5xx retry", async () => {
+  const { isPermanentError } = await import("./send");
+  assert.equal(isPermanentError({ status: 400 }), true); // Twilio RestException
+  assert.equal(isPermanentError({ $metadata: { httpStatusCode: 400 } }), true); // SES MessageRejected
+  assert.equal(isPermanentError({ status: 429 }), false);
+  assert.equal(isPermanentError({ status: 503 }), false);
+  assert.equal(isPermanentError(new Error("socket hang up")), false);
+});
+
+test("zonedLocalToUtc reads the typed time in the tenant's timezone, DST included", async () => {
+  const { zonedLocalToUtc } = await import("./send");
+  assert.equal(zonedLocalToUtc("2026-06-15T10:00", "America/New_York").toISOString(), "2026-06-15T14:00:00.000Z"); // EDT
+  assert.equal(zonedLocalToUtc("2026-11-15T10:00", "America/New_York").toISOString(), "2026-11-15T15:00:00.000Z"); // EST
+});

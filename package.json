@@ -5,24 +5,27 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "tsx --test lib/send.test.ts lib/contacts-import.test.ts"
+    "test": "tsx --test lib/send.test.ts lib/contacts-import.test.ts",
+    "import-contacts": "tsx --env-file=.env.local scripts/import-contacts.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.700.0",
+    "@supabase/ssr": "^0.5.2",
+    "@supabase/supabase-js": "^2.47.0",
     "next": "^15.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "@supabase/supabase-js": "^2.47.0",
-    "@supabase/ssr": "^0.5.2",
-    "@aws-sdk/client-sesv2": "^3.700.0",
+    "sns-validator": "^0.3.5",
     "twilio": "^5.4.0",
-    "xlsx": "^0.18.5",
-    "sns-validator": "^0.3.5"
+    "ws": "^8.22.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "tsx": "^4.19.0",
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0"
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
   }
 }

@@ -143,13 +143,53 @@ export async function sendSmsProvider(args: { to: string; body: string }): Promi
   if (!messagingServiceSid && !fromNumber) {
     throw new Error("Set TWILIO_MESSAGING_SERVICE_SID or TWILIO_FROM_NUMBER");
   }
+  const appUrl = process.env.APP_URL ?? "";
   const msg = await twilio().messages.create({
     to: args.to,
     body: args.body,
     ...(messagingServiceSid ? { messagingServiceSid } : { from: fromNumber }),
-    statusCallback: `${process.env.APP_URL}/api/webhooks/twilio`,
+    // Twilio can't call back to localhost, so delivery receipts only work deployed.
+    ...(appUrl.startsWith("https://") ? { statusCallback: `${appUrl}/api/webhooks/twilio` } : {}),
   });
   return { providerId: msg.sid };
+}
+
+/**
+ * A 4xx from Twilio or SES (bad number, unverified address, trial-account
+ * restriction…) won't succeed on retry, so the message fails at once instead
+ * of sitting in the queue for three attempts. 429 is throttling: retry it.
+ */
+export function isPermanentError(err: unknown): boolean {
+  const e = err as { status?: number; $metadata?: { httpStatusCode?: number } } | null;
+  const code = e?.status ?? e?.$metadata?.httpStatusCode;
+  return typeof code === "number" && code >= 400 && code < 500 && code !== 429;
+}
+
+/**
+ * Turns a wall-clock time typed into a <input type="datetime-local"> (no
+ * timezone, e.g. "2026-11-12T09:30") into the UTC instant it means in the
+ * tenant's timezone. Without this the server's own timezone was used.
+ */
+export function zonedLocalToUtc(local: string, timeZone: string): Date {
+  const [date, time = "00:00"] = local.split("T");
+  const [y, mo, d] = date.split("-").map(Number);
+  const [h, mi] = time.split(":").map(Number);
+  const guess = Date.UTC(y, mo - 1, d, h, mi);
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+      .formatToParts(guess)
+      .map((x) => [x.type, x.value])
+  );
+  const offset = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute) - guess;
+  return new Date(guess - offset);
 }
 
 /** Exponential backoff: 2^attempts minutes, gives up after 3 tries. */

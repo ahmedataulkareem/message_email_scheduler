@@ -7,12 +7,16 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Pr
   const { error } = await searchParams;
   const db = supabaseAdmin();
 
-  const { data: campaigns } = await db
-    .from("campaigns")
-    .select("id, channel, subject, body, status, send_at, created_at")
-    .eq("tenant_id", tenantId)
-    .order("created_at", { ascending: false })
-    .limit(50);
+  const [{ data: campaigns }, { data: tenant }] = await Promise.all([
+    db
+      .from("campaigns")
+      .select("id, channel, subject, body, status, send_at, created_at")
+      .eq("tenant_id", tenantId)
+      .order("created_at", { ascending: false })
+      .limit(50),
+    db.from("tenants").select("timezone").eq("id", tenantId).single(),
+  ]);
+  const timezone = tenant?.timezone ?? "America/New_York";
 
   return (
     <div>
@@ -53,7 +57,7 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Pr
             </div>
           </div>
 
-          <label htmlFor="send_at">Send at</label>
+          <label htmlFor="send_at">Send at ({timezone} time). Leave empty to send as soon as it&apos;s approved.</label>
           <input id="send_at" name="send_at" type="datetime-local" />
 
           <button type="submit" style={{ marginTop: 16 }}>
@@ -83,7 +87,7 @@ export default async function CampaignsPage({ searchParams }: { searchParams: Pr
                 <td>
                   <span className="badge">{c.status}</span>
                 </td>
-                <td>{new Date(c.send_at).toLocaleString()}</td>
+                <td>{new Date(c.send_at).toLocaleString("en-US", { timeZone: timezone })}</td>
               </tr>
             ))}
           </tbody>

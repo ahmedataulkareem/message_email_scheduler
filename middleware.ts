@@ -1,5 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
+// No `ws` import here: this file runs on the Edge runtime, which already has
+// a native WebSocket global (unlike the Node runtime the rest of the app
+// uses) — see lib/supabase.ts for why other files need the polyfill.
 
 // Refreshes the Supabase session cookie on every page request so a long-lived
 // browser session doesn't suddenly expire mid-visit. Webhooks, cron and the

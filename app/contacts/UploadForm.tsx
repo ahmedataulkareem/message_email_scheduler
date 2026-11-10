@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { uploadContacts, type UploadResult } from "./actions";
+import { uploadContacts } from "./actions";
+import type { ImportResult } from "@/lib/contacts-import";
 
 export default function UploadForm() {
-  const [result, setResult] = useState<UploadResult | null>(null);
+  const [result, setResult] = useState<ImportResult | null>(null);
   const [pending, startTransition] = useTransition();
 
   function handleSubmit(formData: FormData) {
@@ -26,15 +27,16 @@ export default function UploadForm() {
       <form action={handleSubmit}>
         <input type="file" name="file" accept=".xlsx,.xls,.csv" required />
         <button type="submit" disabled={pending} style={{ marginTop: 12 }}>
-          {pending ? "Uploading…" : "Upload"}
+          {pending ? "Uploading… a large file takes a minute or two" : "Upload"}
         </button>
       </form>
       {result && (
         <div style={{ marginTop: 12 }}>
           {result.ok ? (
-            <p>
-              Imported {result.imported} of {result.rowsRead} rows ({result.skipped} skipped — no email or
-              phone).
+            <p className="notice">
+              Read {result.rowsRead} rows → {result.imported} contacts saved. {result.duplicatesInFile} rows were
+              extra email addresses for someone already in the file (kept their best address);{" "}
+              {result.skipped} had no email or phone.
             </p>
           ) : (
             <div>

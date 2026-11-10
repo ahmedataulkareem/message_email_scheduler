@@ -3,6 +3,10 @@ import { supabaseAdmin } from "@/lib/supabase";
 import UploadForm from "./UploadForm";
 import SearchBox from "./SearchBox";
 
+// The upload server action runs in this page's function; a 60k-row file
+// needs more than the default timeout once deployed.
+export const maxDuration = 300;
+
 export default async function ContactsPage() {
   const { tenantId } = await requireMembership();
   const db = supabaseAdmin();

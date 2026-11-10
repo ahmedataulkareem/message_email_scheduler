@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { signOut } from "./login/actions";
 import "./globals.css";
 
 export const metadata = { title: "Constituent Messaging" };
@@ -21,6 +22,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               {item.label}
             </a>
           ))}
+          <form action={signOut} style={{ marginLeft: "auto" }}>
+            <button type="submit" className="link">
+              Sign out
+            </button>
+          </form>
         </nav>
         <main className="page">{children}</main>
       </body>
